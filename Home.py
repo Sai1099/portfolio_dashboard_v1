@@ -1,17 +1,54 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+import yfinance as yf
+import plotly.graph_objects as go
+
 
 st.set_page_config(
     page_title="Portfolio Dashboard",
     page_icon="📈",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
     layout="wide"
 )
 
-# ----------------------------
-# Load Data
-# ----------------------------
+
+st.subheader("📈 Momentum Investing Portfolio Dashboard")
+st.info("Updated on 2025-08-31")
+
+df = pd.read_csv("dataa.csv")
+df["current_date"] = pd.to_datetime(df["current_date"])
+df = df.sort_values("current_date").set_index("current_date")
+
+portfolio = df.groupby("current_date")["total_portfolio_value"].last()
+portfolio_returns = portfolio.pct_change().dropna()
+
+
+from datetime import datetime, timedelta
+end_date = max(portfolio.index.max(), datetime.now())
+
+benchmark = yf.download("^CRSLDX", 
+                       start=portfolio.index.min(), 
+                       end=end_date + timedelta(days=30))["Close"] 
+benchmark_monthly = benchmark.resample("ME").last()
+benchmark_returns = benchmark_monthly.pct_change().dropna()
+
+port_ret, bench_ret = portfolio_returns.align(benchmark_returns, join="inner")
+
+if hasattr(bench_ret, 'squeeze'):
+    bench_ret = bench_ret.squeeze()
+
+port_cum = (1 + port_ret).cumprod()
+bench_cum = (1 + bench_ret).cumprod()
+
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=port_cum.index, y=(port_cum-1)*100, name="Portfolio", line_color="blue"))
+fig.add_trace(go.Scatter(x=bench_cum.index, y=(bench_cum-1)*100, name="Benchmark", line_color="orange"))
+fig.update_layout(title="Cumulative Returns (%)", xaxis_title="Date", yaxis_title="Return %")
+
+st.plotly_chart(fig, use_container_width=True)
+
+
 main_df = pd.read_csv("dataa.csv")
 
 date_column = "current_date"  
@@ -32,19 +69,39 @@ cagr = (portfolio_value.iloc[-1] / portfolio_value.iloc[0]) ** (1 / years) - 1
 running_max = portfolio_value.cummax()
 drawdown = (portfolio_value - running_max) / running_max
 max_drawdown = drawdown.min()
+sharpe_ratio = cagr/-max_drawdown
 
 # ----------------------------
 # Layout
 # ----------------------------
-st.title("📈 Momentum Investing Portfolio Dashboard")
+
+
+
+
+
 
 # KPIs in one row
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("CAGR", f"{cagr:.2%}")
 col2.metric("Overall Return", f"{total_return:.2%}")
 col3.metric("Max Drawdown", f"{max_drawdown:.2%}")
+col4.metric("Sharpe Ratio",f"{sharpe_ratio:.2}")
 
 st.divider()
+
+
+date = main_df[date_column].sort_values(ascending=False).tolist()
+
+
+main_df["my_date"] = pd.to_datetime(main_df[date_column])
+latest_date = main_df["my_date"].max()
+
+
+latest_data = main_df[main_df["my_date"] == latest_date]
+only_data = latest_data[latest_data["status"] == "Held"]
+data_to_show = only_data[["ticker","shares_qty","bought_price","current_price","current_value"]]
+st.subheader("Current Holding")
+st.dataframe(data_to_show)
 
 # ----------------------------
 # Charts Section
@@ -144,11 +201,48 @@ dd_chart = alt.Chart(dd_df).mark_bar(color="red").encode(
 # Show Charts
 # ----------------------------
 st.altair_chart(monthly_chart, use_container_width=True)
-st.altair_chart(yearly_chart, use_container_width=True)
+#st.altair_chart(yearly_chart, use_container_width=True)
 st.altair_chart(dd_chart, use_container_width=True)
 
 # ----------------------------
 # Yearly Returns Table
 # ----------------------------
 st.subheader("📊 Yearly Returns Summary")
-st.dataframe(yearly_df[["year", "yearly_return"]].style.format({"yearly_return": "{:.2%}"}))
+
+# prepare DataFrame first
+df_display = yearly_df[["year", "yearly_return"]].reset_index(drop=True)
+
+# optional CSS to center and enlarge table font
+st.markdown("""
+    <style>
+        .stDataFrame table { font-size: 16px; }
+        .stDataFrame td, .stDataFrame th { text-align: center !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+# create a Styler (formatting + optional color)
+def color_return(val):
+    return "color: green; font-weight:600" if val >= 0 else "color: red; font-weight:600"
+
+styled = (
+    df_display
+    .style
+    .format({"yearly_return": "{:.2%}"})
+    .applymap(color_return, subset=["yearly_return"])
+)
+
+st.dataframe(styled, use_container_width=True)
+
+
+
+
+
+# Navigation
+# Navigation
+
+
+
+
+
+
+
