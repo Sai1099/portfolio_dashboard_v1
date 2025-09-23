@@ -3,6 +3,7 @@ import pandas as pd
 import altair as alt
 import yfinance as yf
 import plotly.graph_objects as go
+import datetime
 
 
 st.set_page_config(
@@ -12,10 +13,12 @@ st.set_page_config(
     layout="wide"
 )
 
+today_date = datetime.datetime.now().strftime("%Y-%m-%d")
 
 st.subheader("📈 Momentum Investing Portfolio Dashboard")
-st.info("Updated on 2025-08-31")
+st.info(f"Updated on {today_date}")
 
+# Load and prepare initial data
 df = pd.read_csv("dataa.csv")
 df["current_date"] = pd.to_datetime(df["current_date"])
 df = df.sort_values("current_date").set_index("current_date")
@@ -23,7 +26,7 @@ df = df.sort_values("current_date").set_index("current_date")
 portfolio = df.groupby("current_date")["total_portfolio_value"].last()
 portfolio_returns = portfolio.pct_change().dropna()
 
-
+# Benchmark comparison
 from datetime import datetime, timedelta
 end_date = max(portfolio.index.max(), datetime.now())
 
@@ -41,61 +44,82 @@ if hasattr(bench_ret, 'squeeze'):
 port_cum = (1 + port_ret).cumprod()
 bench_cum = (1 + bench_ret).cumprod()
 
+# Create benchmark comparison chart
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=port_cum.index, y=(port_cum-1)*100, name="Portfolio", line_color="blue"))
 fig.add_trace(go.Scatter(x=bench_cum.index, y=(bench_cum-1)*100, name="Benchmark", line_color="orange"))
-fig.update_layout(title="Cumulative Returns (%)", xaxis_title="Date", yaxis_title="Return %")
+
+fig.update_layout(
+    title="Cumulative Returns (Strategy vs Nifty 500)",
+    xaxis_title="Date",
+    yaxis_title="Return %",
+    legend=dict(
+        orientation="h",   # horizontal
+        yanchor="bottom",
+        y=-0.3,            # move legend further down
+        xanchor="center",
+        x=0.5
+    )
+)
 
 st.plotly_chart(fig, use_container_width=True)
 
-
+# Load main dataset for calculations
 main_df = pd.read_csv("dataa.csv")
-
 date_column = "current_date"  
 main_df[date_column] = pd.to_datetime(main_df[date_column])
 main_df = main_df.sort_values(by=date_column).reset_index(drop=True)
 main_df["total_portfolio_value"] = pd.to_numeric(main_df["total_portfolio_value"], errors="coerce")
 
 # ----------------------------
-# Metrics Calculations
+# FIXED Metrics Calculations
 # ----------------------------
-portfolio_value = main_df["total_portfolio_value"]
 
-total_return = (portfolio_value.iloc[-1] / portfolio_value.iloc[0]) - 1
-days = (main_df[date_column].iloc[-1] - main_df[date_column].iloc[0]).days
+# Get the deduplicated portfolio values (one value per date)
+portfolio_values = main_df.groupby(date_column)["total_portfolio_value"].last().sort_index()
+
+# Calculate metrics using the deduplicated data
+total_return = (portfolio_values.iloc[-1] / portfolio_values.iloc[0]) - 1
+
+# Use the actual first and last dates from the portfolio data
+start_date = portfolio_values.index[0]
+end_date = portfolio_values.index[-1]
+days = (end_date - start_date).days
 years = days / 365.25
-cagr = (portfolio_value.iloc[-1] / portfolio_value.iloc[0]) ** (1 / years) - 1
 
-running_max = portfolio_value.cummax()
-drawdown = (portfolio_value - running_max) / running_max
+# Calculate CAGR correctly
+if years > 0:
+    cagr = (portfolio_values.iloc[-1] / portfolio_values.iloc[0]) ** (1 / years) - 1
+else:
+    cagr = 0
+
+# For drawdown calculation, also use the deduplicated data
+running_max = portfolio_values.cummax()
+drawdown = (portfolio_values - running_max) / running_max
 max_drawdown = drawdown.min()
-sharpe_ratio = cagr/-max_drawdown
+
+# Fixed Sharpe-like ratio (CAGR to Max Drawdown ratio)
+if max_drawdown != 0:
+    sharpe_ratio = cagr / abs(max_drawdown)
+else:
+    sharpe_ratio = 0
 
 # ----------------------------
-# Layout
+# KPIs Display
 # ----------------------------
-
-
-
-
-
-
-# KPIs in one row
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("CAGR", f"{cagr:.2%}")
 col2.metric("Overall Return", f"{total_return:.2%}")
 col3.metric("Max Drawdown", f"{max_drawdown:.2%}")
-col4.metric("Sharpe Ratio",f"{sharpe_ratio:.2}")
+col4.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
 
 st.divider()
 
-
-date = main_df[date_column].sort_values(ascending=False).tolist()
-
-
+# ----------------------------
+# Current Holdings
+# ----------------------------
 main_df["my_date"] = pd.to_datetime(main_df[date_column])
 latest_date = main_df["my_date"].max()
-
 
 latest_data = main_df[main_df["my_date"] == latest_date]
 only_data = latest_data[latest_data["status"] == "Held"]
@@ -160,32 +184,13 @@ yearly_chart = (
     .encode(x="year:O", y="yearly_return:Q", text=alt.Text("yearly_return:Q", format=".1%"))
 )
 
-# ---- Drawdown Chart ----
-# ---- Drawdown Calculation ----
-main_df = main_df.sort_values(by=date_column).reset_index(drop=True)
-
-# Running max
-# Ensure numeric
-main_df["total_portfolio_value"] = pd.to_numeric(main_df["total_portfolio_value"], errors="coerce")
-main_df[date_column] = pd.to_datetime(main_df[date_column])
-
-# Sort by date to avoid misaligned cummax
-main_df = main_df.sort_values(by=date_column).reset_index(drop=True)
-
-# Keep only last value per day (if duplicates exist)
-main_df = main_df.groupby(date_column, as_index=False).last()
-
-# Drawdown calculation
-running_max = main_df["total_portfolio_value"].cummax()
-drawdown = main_df["total_portfolio_value"] / running_max - 1
-
-# DataFrame for plotting
+# ---- Fixed Drawdown Chart ----
+# Use the same deduplicated portfolio values for consistency
 dd_df = pd.DataFrame({
-    date_column: main_df[date_column],
+    date_column: portfolio_values.index,
     "drawdown": drawdown
 })
 
-# Bar chart version of drawdown
 dd_chart = alt.Chart(dd_df).mark_bar(color="red").encode(
     x=alt.X(f"{date_column}:T", title="Date"),
     y=alt.Y("drawdown:Q", title="Drawdown", axis=alt.Axis(format="%"), scale=alt.Scale(domain=[-1, 0])),
@@ -195,13 +200,10 @@ dd_chart = alt.Chart(dd_df).mark_bar(color="red").encode(
     height=300
 )
 
-
-
 # ----------------------------
 # Show Charts
 # ----------------------------
 st.altair_chart(monthly_chart, use_container_width=True)
-#st.altair_chart(yearly_chart, use_container_width=True)
 st.altair_chart(dd_chart, use_container_width=True)
 
 # ----------------------------
@@ -232,17 +234,3 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
-
-
-
-
-
-# Navigation
-# Navigation
-
-
-
-
-
-
-
